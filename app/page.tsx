@@ -9,6 +9,7 @@ const AD_DURATION_SECONDS = 15;
 const STORAGE_KEY = "eco_check_mvp_state_v1";
 
 type PrincipleKey = "empty" | "rinse" | "separate" | "noMix";
+type DisposalCategory = "재활용" | "일반쓰레기" | "음식물쓰레기" | "특수배출" | "인식 불가";
 
 interface PrincipleResult {
   key: PrincipleKey;
@@ -19,6 +20,10 @@ interface PrincipleResult {
 
 interface EvaluationResult {
   itemName: string;
+  disposalCategory: DisposalCategory;
+  detailedCategory: string;
+  disposalSteps: string[];
+  cautionNote: string;
   isValidWaste: boolean;
   isScreenCapture: boolean;
   principles: PrincipleResult[];
@@ -70,6 +75,41 @@ function getInitialState(date = ""): PersistedState {
   };
 }
 
+function getCategoryStyle(category: DisposalCategory) {
+  switch (category) {
+    case "재활용":
+      return {
+        badge: "bg-emerald-600 text-white",
+        box: "bg-emerald-50 border-emerald-200",
+        subText: "text-emerald-800",
+      };
+    case "일반쓰레기":
+      return {
+        badge: "bg-slate-700 text-white",
+        box: "bg-slate-100 border-slate-300",
+        subText: "text-slate-700",
+      };
+    case "음식물쓰레기":
+      return {
+        badge: "bg-amber-600 text-white",
+        box: "bg-amber-50 border-amber-200",
+        subText: "text-amber-800",
+      };
+    case "특수배출":
+      return {
+        badge: "bg-violet-600 text-white",
+        box: "bg-violet-50 border-violet-200",
+        subText: "text-violet-800",
+      };
+    default:
+      return {
+        badge: "bg-rose-600 text-white",
+        box: "bg-rose-50 border-rose-200",
+        subText: "text-rose-800",
+      };
+  }
+}
+
 // 동일 이미지 재사용 차단을 위한 SHA-256 해시 계산
 async function computeFileHash(file: File): Promise<string> {
   const buffer = await file.arrayBuffer();
@@ -88,7 +128,7 @@ async function computeFileHash(file: File): Promise<string> {
   return `fallback-${(hash >>> 0).toString(16)}-${file.size}`;
 }
 
-// 스마트폰 고화질 사진을 최대 1024px JPEG로 압축 (Vercel 전송 용량 제한 방지 및 속도 개선)
+// 스마트폰 고화질 사진을 최대 1024px JPEG로 압축
 function compressImage(file: File): Promise<{
   previewDataUrl: string;
   base64: string;
@@ -261,7 +301,7 @@ export default function HomePage() {
 
     // 동일 이미지 해시 재사용 차단
     if (appState.usedHashes.includes(currentHash)) {
-      setErrorMessage("이미 인증에 사용된 동일한 사진입니다. 새로운 분리배출 사진을 촬영해 주세요.");
+      setErrorMessage("이미 인증에 사용된 동일한 사진입니다. 새로운 쓰레기 사진을 촬영해 주세요.");
       setAppState((prev) => ({
         ...prev,
         logs: {
@@ -350,6 +390,8 @@ export default function HomePage() {
     setShowStatsModal(false);
   };
 
+  const categoryStyle = result ? getCategoryStyle(result.disposalCategory) : null;
+
   return (
     <div className="min-h-screen bg-slate-100 flex justify-center">
       <main className="w-full max-w-md min-h-screen bg-white shadow-sm flex flex-col justify-between">
@@ -373,7 +415,7 @@ export default function HomePage() {
               </span>
               <div>
                 <h1 className="text-base font-bold text-slate-900 leading-tight">에코체크</h1>
-                <p className="text-[11px] text-emerald-700 font-medium">AI 분리배출 리워드</p>
+                <p className="text-[11px] text-emerald-700 font-medium">1인 가구 AI 분리배출 가이드</p>
               </div>
             </button>
 
@@ -394,7 +436,7 @@ export default function HomePage() {
           <section className="px-5 pt-4">
             <div className="bg-emerald-50/80 border border-emerald-100 rounded-2xl p-4 flex items-center justify-between">
               <div>
-                <p className="text-xs font-medium text-emerald-800">오늘 남은 인증 횟수</p>
+                <p className="text-xs font-medium text-emerald-800">오늘 남은 무료 판별·인증</p>
                 <p className="text-2xl font-extrabold text-emerald-950 mt-0.5">
                   {appState.remainingAttempts}
                   <span className="text-sm font-semibold text-emerald-700 ml-1">/ {DEFAULT_DAILY_LIMIT}회</span>
@@ -402,9 +444,9 @@ export default function HomePage() {
               </div>
               <div className="text-right">
                 <span className="inline-block text-[11px] font-semibold bg-white text-emerald-800 border border-emerald-200 px-2.5 py-1 rounded-full">
-                  환경부 4대 원칙 기준
+                  배출법 안내 + 코인
                 </span>
-                <p className="text-[11px] text-slate-500 mt-1">최대 40코인 차등 지급</p>
+                <p className="text-[11px] text-slate-500 mt-1">일반·재활용 즉시 분류</p>
               </div>
             </div>
           </section>
@@ -441,9 +483,9 @@ export default function HomePage() {
                   </svg>
                 </div>
                 <div>
-                  <h2 className="text-base font-bold text-slate-900">오늘의 무료 인증을 모두 썼어요</h2>
+                  <h2 className="text-base font-bold text-slate-900">오늘의 무료 확인 횟수를 모두 썼어요</h2>
                   <p className="text-xs text-slate-600 mt-1">
-                    15초 친환경 파트너 광고를 시청하면 인증 횟수 1회가 즉시 추가됩니다.
+                    15초 친환경 파트너 광고를 시청하면 1회 더 판별·인증할 수 있습니다.
                   </p>
                 </div>
                 <button
@@ -468,11 +510,11 @@ export default function HomePage() {
                   </svg>
                 </div>
                 <div>
-                  <h2 className="text-base font-bold text-slate-900">분리배출한 쓰레기를 찍어주세요</h2>
+                  <h2 className="text-base font-bold text-slate-900">어떻게 버릴지 헷갈리는 쓰레기를 찍어주세요</h2>
                   <p className="text-xs text-slate-500 mt-1 leading-relaxed">
-                    비우기 · 헹구기 · 분리하기 · 섞지 않기 기준을
+                    일반쓰레기인지 재활용인지 AI가 바로 분류해 주고,
                     <br />
-                    AI가 바로 평가하고 코인을 드립니다.
+                    버리는 방법 안내와 리워드 코인까지 드립니다.
                   </p>
                 </div>
                 <div className="space-y-2 pt-1">
@@ -481,7 +523,7 @@ export default function HomePage() {
                     onClick={() => cameraInputRef.current?.click()}
                     className="w-full py-3.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-sm shadow-sm transition active:scale-[0.99]"
                   >
-                    분리배출 사진 찍기
+                    쓰레기 사진 찍기
                   </button>
                   <button
                     type="button"
@@ -496,7 +538,7 @@ export default function HomePage() {
               /* 사진 선택 완료 상태 */
               <div className="space-y-3">
                 <div className="relative rounded-2xl overflow-hidden border border-slate-200 bg-slate-900 aspect-[4/3]">
-                  <img src={previewUrl} alt="분리배출 인증 미리보기" className="w-full h-full object-contain" />
+                  <img src={previewUrl} alt="분리배출 쓰레기 미리보기" className="w-full h-full object-contain" />
                   <button
                     type="button"
                     onClick={handleResetPhoto}
@@ -523,117 +565,159 @@ export default function HomePage() {
                     {isAnalyzing ? (
                       <>
                         <span className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin" />
-                        AI가 환경부 4대 원칙 평가 중...
+                        AI가 품목 분류 및 배출법 분석 중...
                       </>
                     ) : (
-                      "AI 평가 받고 코인 받기"
+                      "AI 분류 · 배출법 확인하기"
                     )}
                   </button>
                 )}
               </div>
             )}
 
-            {/* AI 평가 결과 카드 */}
-            {result && (
-              <div
-                className={`rounded-2xl border p-4 space-y-4 ${
-                  result.earnedCoins > 0
-                    ? "bg-white border-emerald-200 shadow-sm"
-                    : "bg-rose-50/50 border-rose-200"
-                }`}
-              >
-                <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <span
-                      className={`inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full ${
-                        result.earnedCoins === 40
-                          ? "bg-emerald-100 text-emerald-800"
-                          : result.earnedCoins > 0
-                          ? "bg-amber-100 text-amber-800"
-                          : "bg-rose-100 text-rose-800"
-                      }`}
-                    >
-                      {result.earnedCoins === 40
-                        ? "완벽 배출"
-                        : result.earnedCoins > 0
-                        ? "부분 통과"
-                        : result.isScreenCapture
-                        ? "화면 재촬영 감지"
-                        : "인증 반려"}
-                    </span>
-                    <h3 className="text-base font-bold text-slate-900 mt-1">{result.itemName}</h3>
-                  </div>
-                  <div className="text-right">
-                    <p className="text-[11px] text-slate-500">획득 리워드</p>
-                    <p
-                      className={`text-xl font-extrabold ${
-                        result.earnedCoins > 0 ? "text-emerald-600" : "text-rose-600"
-                      }`}
-                    >
-                      +{result.earnedCoins} 코인
-                    </p>
-                  </div>
-                </div>
+            {/* AI 판독 및 배출 가이드 결과 카드 */}
+            {result && categoryStyle && (
+              <div className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden">
+                {/* 1. 품목 & 배출 분류 배너 */}
+                <div className={`p-4 border-b ${categoryStyle.box}`}>
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="space-y-1.5">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className={`text-xs font-extrabold px-2.5 py-1 rounded-lg ${categoryStyle.badge}`}>
+                          {result.disposalCategory}
+                        </span>
+                        <span className={`text-xs font-bold ${categoryStyle.subText}`}>
+                          · {result.detailedCategory}
+                        </span>
+                      </div>
+                      <h3 className="text-lg font-extrabold text-slate-900">{result.itemName}</h3>
+                    </div>
 
-                {/* 환경부 4대 원칙 체크리스트 */}
-                <div className="space-y-2">
-                  {result.principles.map((item) => (
-                    <div
-                      key={item.key}
-                      className={`flex items-start gap-2.5 p-2.5 rounded-xl text-xs ${
-                        item.passed ? "bg-emerald-50/70" : "bg-rose-50/80"
-                      }`}
-                    >
-                      <span
-                        className={`mt-0.5 w-5 h-5 rounded-full flex items-center justify-center shrink-0 font-bold text-[11px] ${
-                          item.passed ? "bg-emerald-600 text-white" : "bg-rose-500 text-white"
+                    <div className="text-right shrink-0">
+                      <p className="text-[11px] text-slate-500">획득 리워드</p>
+                      <p
+                        className={`text-xl font-extrabold ${
+                          result.earnedCoins > 0 ? "text-emerald-600" : "text-rose-600"
                         }`}
                       >
-                        {item.passed ? "O" : "X"}
-                      </span>
-                      <div>
-                        <p className="font-bold text-slate-900">{item.label}</p>
-                        <p className="text-slate-600 mt-0.5">{item.detail}</p>
+                        +{result.earnedCoins} 코인
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="p-4 space-y-4">
+                  {/* 2. 1인 가구용 단계별 버리는 방법 */}
+                  <div className="space-y-2">
+                    <h4 className="text-xs font-extrabold text-slate-900 flex items-center gap-1.5">
+                      <span className="w-1.5 h-4 rounded-full bg-emerald-600 inline-block" />
+                      이렇게 버려주세요
+                    </h4>
+                    <ol className="space-y-2">
+                      {result.disposalSteps.map((step, idx) => (
+                        <li
+                          key={idx}
+                          className="flex items-start gap-2.5 bg-slate-50 border border-slate-100 rounded-xl p-2.5 text-xs text-slate-800 leading-relaxed"
+                        >
+                          <span className="w-5 h-5 rounded-full bg-emerald-100 text-emerald-800 font-extrabold text-[11px] flex items-center justify-center shrink-0 mt-0.5">
+                            {idx + 1}
+                          </span>
+                          <span>{step.replace(/^\d+단계:\s*/, "")}</span>
+                        </li>
+                      ))}
+                    </ol>
+                  </div>
+
+                  {/* 3. 헷갈리기 쉬운 포인트 */}
+                  {result.cautionNote && (
+                    <div className="rounded-xl bg-amber-50 border border-amber-200 p-3 text-xs text-amber-950">
+                      <p className="font-bold text-amber-800 mb-0.5">헷갈리기 쉬운 포인트</p>
+                      <p className="leading-relaxed">{result.cautionNote}</p>
+                    </div>
+                  )}
+
+                  {/* 4. 재활용품일 때만 환경부 4대 원칙 배출 상태 평가 표시 */}
+                  {result.isValidWaste && result.disposalCategory === "재활용" && (
+                    <div className="space-y-2 pt-1 border-t border-slate-100">
+                      <div className="flex items-center justify-between">
+                        <h4 className="text-xs font-extrabold text-slate-900">
+                          현재 분리배출 상태 평가 ({result.passedCount}/4 통과)
+                        </h4>
+                        <span className="text-[11px] font-semibold text-emerald-700">환경부 4대 원칙</span>
+                      </div>
+                      <div className="space-y-1.5">
+                        {result.principles.map((item) => (
+                          <div
+                            key={item.key}
+                            className={`flex items-start gap-2.5 p-2.5 rounded-xl text-xs ${
+                              item.passed ? "bg-emerald-50/70" : "bg-rose-50/80"
+                            }`}
+                          >
+                            <span
+                              className={`mt-0.5 w-5 h-5 rounded-full flex items-center justify-center shrink-0 font-bold text-[11px] ${
+                                item.passed ? "bg-emerald-600 text-white" : "bg-rose-500 text-white"
+                              }`}
+                            >
+                              {item.passed ? "O" : "X"}
+                            </span>
+                            <div>
+                              <p className="font-bold text-slate-900">{item.label}</p>
+                              <p className="text-slate-600 mt-0.5">{item.detail}</p>
+                            </div>
+                          </div>
+                        ))}
                       </div>
                     </div>
-                  ))}
-                </div>
+                  )}
 
-                {/* AI 종합 피드백 */}
-                <div className="rounded-xl bg-slate-50 border border-slate-200 p-3 space-y-1">
-                  <p className="text-xs font-bold text-slate-800">{result.summaryFeedback}</p>
-                  <p className="text-xs text-emerald-700 font-medium">💡 {result.actionTip}</p>
-                </div>
+                  {/* 5. 비재활용(일반/음식물/특수배출) 리워드 안내 */}
+                  {result.isValidWaste && result.disposalCategory !== "재활용" && (
+                    <div className="rounded-xl bg-slate-50 border border-slate-200 p-3 text-xs text-slate-700">
+                      <p className="font-bold text-slate-900">{result.summaryFeedback}</p>
+                      <p className="mt-1 text-emerald-700 font-medium">
+                        올바른 배출 분류 확인 리워드로 +20코인이 지급되었습니다.
+                      </p>
+                    </div>
+                  )}
 
-                <button
-                  type="button"
-                  onClick={handleResetPhoto}
-                  className="w-full py-3 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs transition"
-                >
-                  다른 쓰레기 인증하기
-                </button>
+                  {/* 6. 종합 피드백 & 팁 (재활용 또는 반려 시) */}
+                  {(!result.isValidWaste || result.disposalCategory === "재활용") && (
+                    <div className="rounded-xl bg-slate-50 border border-slate-200 p-3 space-y-1">
+                      <p className="text-xs font-bold text-slate-800">{result.summaryFeedback}</p>
+                      <p className="text-xs text-emerald-700 font-medium">💡 {result.actionTip}</p>
+                    </div>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={handleResetPhoto}
+                    className="w-full py-3 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs transition"
+                  >
+                    다른 쓰레기 확인하기
+                  </button>
+                </div>
               </div>
             )}
 
             {/* 리워드 기준 안내 */}
-            <div className="rounded-2xl bg-slate-50 border border-slate-200/80 p-4">
-              <h3 className="text-xs font-bold text-slate-800 mb-2">차등 코인 리워드 기준</h3>
+            <div className="rounded-2xl bg-slate-50 border border-slate-200/80 p-4 space-y-2.5">
+              <h3 className="text-xs font-bold text-slate-800">리워드 지급 기준</h3>
               <div className="grid grid-cols-4 gap-1.5 text-center">
                 <div className="bg-white rounded-lg p-2 border border-emerald-200">
-                  <p className="text-[11px] text-slate-500">4개 통과</p>
+                  <p className="text-[10px] text-slate-500">재활용 4/4</p>
                   <p className="text-xs font-extrabold text-emerald-700 mt-0.5">40C</p>
                 </div>
                 <div className="bg-white rounded-lg p-2 border border-slate-200">
-                  <p className="text-[11px] text-slate-500">3개 통과</p>
+                  <p className="text-[10px] text-slate-500">재활용 3/4</p>
                   <p className="text-xs font-extrabold text-slate-800 mt-0.5">25C</p>
                 </div>
                 <div className="bg-white rounded-lg p-2 border border-slate-200">
-                  <p className="text-[11px] text-slate-500">2개 통과</p>
+                  <p className="text-[10px] text-slate-500">재활용 2/4</p>
                   <p className="text-xs font-extrabold text-slate-800 mt-0.5">10C</p>
                 </div>
                 <div className="bg-white rounded-lg p-2 border border-slate-200">
-                  <p className="text-[11px] text-slate-500">1개 이하</p>
-                  <p className="text-xs font-extrabold text-rose-600 mt-0.5">0C</p>
+                  <p className="text-[10px] text-slate-500">일반·음식물</p>
+                  <p className="text-xs font-extrabold text-slate-700 mt-0.5">20C</p>
                 </div>
               </div>
             </div>
@@ -691,8 +775,8 @@ export default function HomePage() {
                 className="w-full py-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-300 disabled:text-slate-500 text-white font-bold text-sm transition"
               >
                 {adSecondsLeft > 0
-                  ? `${adSecondsLeft}초 후 인증 횟수 +1회 지급`
-                  : "보상 받고 인증 1회 추가하기"}
+                  ? `${adSecondsLeft}초 후 확인 횟수 +1회 지급`
+                  : "보상 받고 확인 1회 추가하기"}
               </button>
             </div>
           </div>
@@ -766,11 +850,11 @@ export default function HomePage() {
 
             <div className="grid grid-cols-2 gap-2 text-xs">
               <div className="p-3 rounded-xl bg-slate-50 border border-slate-200">
-                <p className="text-slate-500">총 인증 시도</p>
+                <p className="text-slate-500">총 확인·인증 시도</p>
                 <p className="text-lg font-extrabold text-slate-900 mt-0.5">{appState.logs.totalAttempts}회</p>
               </div>
               <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200">
-                <p className="text-emerald-700">인증 통과</p>
+                <p className="text-emerald-700">정상 판별·통과</p>
                 <p className="text-lg font-extrabold text-emerald-900 mt-0.5">{appState.logs.successCount}회</p>
               </div>
               <div className="p-3 rounded-xl bg-rose-50 border border-rose-200">
