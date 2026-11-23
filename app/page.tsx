@@ -9,7 +9,6 @@ const AD_DURATION_SECONDS = 15;
 const STORAGE_KEY = "eco_check_mvp_state_v1";
 
 type PrincipleKey = "empty" | "rinse" | "separate" | "noMix";
-type MockMode = "perfect" | "partial" | "rejected";
 
 interface PrincipleResult {
   key: PrincipleKey;
@@ -71,7 +70,7 @@ function getInitialState(date = ""): PersistedState {
   };
 }
 
-// 이미지 중복 업로드 차단을 위한 SHA-256 해시 계산 (비HTTPS 환경 폴백 포함)
+// 동일 이미지 재사용 차단을 위한 SHA-256 해시 계산
 async function computeFileHash(file: File): Promise<string> {
   const buffer = await file.arrayBuffer();
   if (typeof window !== "undefined" && window.crypto?.subtle) {
@@ -89,74 +88,73 @@ async function computeFileHash(file: File): Promise<string> {
   return `fallback-${(hash >>> 0).toString(16)}-${file.size}`;
 }
 
-// 1단계 목업(가짜 AI) 평가 결과 생성기
-function getMockEvaluation(mode: MockMode): EvaluationResult {
-  if (mode === "perfect") {
-    return {
-      itemName: "투명 페트병",
-      isValidWaste: true,
-      isScreenCapture: false,
-      principles: [
-        { key: "empty", label: "비운다", passed: true, detail: "내부 액체가 완전히 비워져 있습니다." },
-        { key: "rinse", label: "헹군다", passed: true, detail: "이물질 없이 깨끗하게 헹궈졌습니다." },
-        { key: "separate", label: "분리한다", passed: true, detail: "비닐 라벨과 뚜껑이 깔끔하게 분리되었습니다." },
-        { key: "noMix", label: "섞지 않는다", passed: true, detail: "투명 페트병 단독 배출 상태가 양호합니다." },
-      ],
-      passedCount: 4,
-      earnedCoins: 40,
-      summaryFeedback: "환경부 분리배출 4대 원칙을 모두 완벽하게 지켰습니다!",
-      actionTip: "부피를 줄여 찌그러뜨려 배출하면 수거 효율이 더 높아집니다.",
-    };
-  }
+// 스마트폰 고화질 사진을 최대 1024px JPEG로 압축 (Vercel 전송 용량 제한 방지 및 속도 개선)
+function compressImage(file: File): Promise<{
+  previewDataUrl: string;
+  base64: string;
+  mimeType: string;
+}> {
+  return new Promise((resolve, reject) => {
+    const objectUrl = URL.createObjectURL(file);
+    const img = new Image();
 
-  if (mode === "partial") {
-    return {
-      itemName: "투명 페트병 (라벨 미제거)",
-      isValidWaste: true,
-      isScreenCapture: false,
-      principles: [
-        { key: "empty", label: "비운다", passed: true, detail: "내용물이 잘 비워져 있습니다." },
-        { key: "rinse", label: "헹군다", passed: true, detail: "내부 오염이 거의 보이지 않습니다." },
-        { key: "separate", label: "분리한다", passed: false, detail: "외부 비닐 라벨이 아직 붙어 있습니다." },
-        { key: "noMix", label: "섞지 않는다", passed: true, detail: "다른 재질과 섞이지 않았습니다." },
-      ],
-      passedCount: 3,
-      earnedCoins: 25,
-      summaryFeedback: "3가지 원칙을 충족했어요! 한 가지만 보완하면 최고 보상을 받을 수 있습니다.",
-      actionTip: "페트병 라벨을 완전히 떼어내면 다음 인증에서 40코인을 받을 수 있어요!",
-    };
-  }
+    img.onload = () => {
+      try {
+        const maxDimension = 1024;
+        let { width, height } = img;
 
-  return {
-    itemName: "인식 불가 / 부정 인증 감지",
-    isValidWaste: false,
-    isScreenCapture: true,
-    principles: [
-      { key: "empty", label: "비운다", passed: false, detail: "실제 분리배출 대상이 확인되지 않습니다." },
-      { key: "rinse", label: "헹군다", passed: false, detail: "판독 불가" },
-      { key: "separate", label: "분리한다", passed: false, detail: "판독 불가" },
-      { key: "noMix", label: "섞지 않는다", passed: false, detail: "판독 불가" },
-    ],
-    passedCount: 0,
-    earnedCoins: 0,
-    summaryFeedback: "모니터·스마트폰 화면 재촬영 또는 분리배출 쓰레기가 아닌 사진으로 판단되었습니다.",
-    actionTip: "실제 분리배출한 쓰레기를 카메라로 직접 촬영해 주세요.",
-  };
+        if (width > maxDimension || height > maxDimension) {
+          if (width >= height) {
+            height = Math.round((height * maxDimension) / width);
+            width = maxDimension;
+          } else {
+            width = Math.round((width * maxDimension) / height);
+            height = maxDimension;
+          }
+        }
+
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          throw new Error("이미지 캔버스를 초기화할 수 없습니다.");
+        }
+        ctx.drawImage(img, 0, 0, width, height);
+
+        const mimeType = "image/jpeg";
+        const previewDataUrl = canvas.toDataURL(mimeType, 0.8);
+        const base64 = previewDataUrl.split(",")[1] || "";
+
+        URL.revokeObjectURL(objectUrl);
+        resolve({ previewDataUrl, base64, mimeType });
+      } catch (err) {
+        URL.revokeObjectURL(objectUrl);
+        reject(err);
+      }
+    };
+
+    img.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      reject(new Error("이미지 파일을 읽을 수 없습니다."));
+    };
+
+    img.src = objectUrl;
+  });
 }
 
 export default function HomePage() {
-  const [appState, setAppState] = useState<PersistedState>(getInitialState);
+  const [appState, setAppState] = useState<PersistedState>(() => getInitialState());
   const [isLoaded, setIsLoaded] = useState(false);
 
   // 이미지 및 평가 상태
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [imageBase64, setImageBase64] = useState<string | null>(null);
+  const [imageMimeType, setImageMimeType] = useState<string>("image/jpeg");
   const [currentHash, setCurrentHash] = useState<string | null>(null);
-  const [duplicateError, setDuplicateError] = useState<string | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [result, setResult] = useState<EvaluationResult | null>(null);
-
-  // 1단계 테스트용 시뮬레이션 모드
-  const [mockMode, setMockMode] = useState<MockMode>("perfect");
 
   // 모달 상태
   const [showAdModal, setShowAdModal] = useState(false);
@@ -239,33 +237,31 @@ export default function HomePage() {
     if (!file) return;
 
     setResult(null);
-    setDuplicateError(null);
+    setErrorMessage(null);
 
-    const hash = await computeFileHash(file);
-    setCurrentHash(hash);
+    try {
+      const [hash, compressed] = await Promise.all([
+        computeFileHash(file),
+        compressImage(file),
+      ]);
+      setCurrentHash(hash);
+      setPreviewUrl(compressed.previewDataUrl);
+      setImageBase64(compressed.base64);
+      setImageMimeType(compressed.mimeType);
+    } catch {
+      setErrorMessage("사진을 불러오지 못했습니다. 다른 사진으로 다시 시도해 주세요.");
+    }
 
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === "string") {
-        setPreviewUrl(reader.result);
-      }
-    };
-    reader.readAsDataURL(file);
-
-    // 같은 파일을 다시 선택해도 onChange가 트리거되도록 초기화
     e.target.value = "";
   };
 
-  const handleAnalyze = () => {
-    if (!previewUrl || !currentHash || isAnalyzing) return;
-
-    if (appState.remainingAttempts <= 0) {
-      return;
-    }
+  const handleAnalyze = async () => {
+    if (!imageBase64 || !currentHash || isAnalyzing) return;
+    if (appState.remainingAttempts <= 0) return;
 
     // 동일 이미지 해시 재사용 차단
     if (appState.usedHashes.includes(currentHash)) {
-      setDuplicateError("이미 인증에 사용된 동일한 사진입니다. 새로운 분리배출 사진을 촬영해 주세요.");
+      setErrorMessage("이미 인증에 사용된 동일한 사진입니다. 새로운 분리배출 사진을 촬영해 주세요.");
       setAppState((prev) => ({
         ...prev,
         logs: {
@@ -277,19 +273,32 @@ export default function HomePage() {
     }
 
     setIsAnalyzing(true);
-    setDuplicateError(null);
+    setErrorMessage(null);
 
-    // 1단계: 실제 API 호출 느낌을 주는 1.2초 지연 후 목업 평가 반환
-    setTimeout(() => {
-      const evaluation = getMockEvaluation(mockMode);
-      setResult(evaluation);
-      setIsAnalyzing(false);
+    try {
+      const response = await fetch("/api/analyze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          imageBase64,
+          mimeType: imageMimeType,
+        }),
+      });
+
+      const data = (await response.json()) as EvaluationResult & { error?: string };
+
+      if (!response.ok) {
+        setErrorMessage(data.error || "AI 분석 중 오류가 발생했습니다. 다시 시도해 주세요.");
+        return;
+      }
+
+      setResult(data);
 
       setAppState((prev) => {
-        const isSuccess = evaluation.earnedCoins > 0;
+        const isSuccess = data.earnedCoins > 0;
         return {
           ...prev,
-          coins: prev.coins + evaluation.earnedCoins,
+          coins: prev.coins + data.earnedCoins,
           remainingAttempts: Math.max(0, prev.remainingAttempts - 1),
           usedHashes: isSuccess ? [...prev.usedHashes, currentHash] : prev.usedHashes,
           logs: {
@@ -297,11 +306,15 @@ export default function HomePage() {
             totalAttempts: prev.logs.totalAttempts + 1,
             successCount: prev.logs.successCount + (isSuccess ? 1 : 0),
             rejectedCount: prev.logs.rejectedCount + (isSuccess ? 0 : 1),
-            totalCoinsEarned: prev.logs.totalCoinsEarned + evaluation.earnedCoins,
+            totalCoinsEarned: prev.logs.totalCoinsEarned + data.earnedCoins,
           },
         };
       });
-    }, 1200);
+    } catch {
+      setErrorMessage("네트워크 연결이 불안정합니다. 인터넷 상태를 확인 후 다시 시도해 주세요.");
+    } finally {
+      setIsAnalyzing(false);
+    }
   };
 
   const handleOpenAdModal = () => {
@@ -324,9 +337,10 @@ export default function HomePage() {
 
   const handleResetPhoto = () => {
     setPreviewUrl(null);
+    setImageBase64(null);
     setCurrentHash(null);
     setResult(null);
-    setDuplicateError(null);
+    setErrorMessage(null);
   };
 
   const handleResetAllData = () => {
@@ -395,53 +409,8 @@ export default function HomePage() {
             </div>
           </section>
 
-          {/* 1단계 목업 시뮬레이션 선택기 (2단계 실제 AI 연결 시 제거 예정) */}
-          <section className="px-5 pt-3">
-            <div className="bg-slate-50 border border-slate-200 rounded-xl p-3">
-              <p className="text-[11px] font-semibold text-slate-500 mb-2">
-                [1단계 시연·테스트용] 가짜 AI 결과 선택
-              </p>
-              <div className="grid grid-cols-3 gap-1.5">
-                <button
-                  type="button"
-                  onClick={() => setMockMode("perfect")}
-                  className={`py-1.5 px-2 rounded-lg text-xs font-semibold transition ${
-                    mockMode === "perfect"
-                      ? "bg-emerald-600 text-white shadow-sm"
-                      : "bg-white text-slate-600 border border-slate-200"
-                  }`}
-                >
-                  완벽 통과
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setMockMode("partial")}
-                  className={`py-1.5 px-2 rounded-lg text-xs font-semibold transition ${
-                    mockMode === "partial"
-                      ? "bg-amber-500 text-white shadow-sm"
-                      : "bg-white text-slate-600 border border-slate-200"
-                  }`}
-                >
-                  라벨 미제거
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setMockMode("rejected")}
-                  className={`py-1.5 px-2 rounded-lg text-xs font-semibold transition ${
-                    mockMode === "rejected"
-                      ? "bg-rose-600 text-white shadow-sm"
-                      : "bg-white text-slate-600 border border-slate-200"
-                  }`}
-                >
-                  어뷰징 반려
-                </button>
-              </div>
-            </div>
-          </section>
-
           {/* 메인 인증 영역 */}
           <section className="px-5 py-4 space-y-4">
-            {/* 숨겨진 파일 입력 */}
             <input
               ref={cameraInputRef}
               type="file"
@@ -531,15 +500,16 @@ export default function HomePage() {
                   <button
                     type="button"
                     onClick={handleResetPhoto}
+                    disabled={isAnalyzing}
                     className="absolute top-3 right-3 bg-black/65 hover:bg-black/80 text-white text-xs font-semibold px-3 py-1.5 rounded-full"
                   >
                     다시 찍기
                   </button>
                 </div>
 
-                {duplicateError && (
+                {errorMessage && (
                   <div className="rounded-xl bg-rose-50 border border-rose-200 p-3.5 text-xs text-rose-800 font-medium">
-                    ⚠️ {duplicateError}
+                    ⚠️ {errorMessage}
                   </div>
                 )}
 
@@ -587,6 +557,8 @@ export default function HomePage() {
                         ? "완벽 배출"
                         : result.earnedCoins > 0
                         ? "부분 통과"
+                        : result.isScreenCapture
+                        ? "화면 재촬영 감지"
                         : "인증 반려"}
                     </span>
                     <h3 className="text-base font-bold text-slate-900 mt-1">{result.itemName}</h3>
@@ -685,7 +657,7 @@ export default function HomePage() {
         </footer>
       </main>
 
-      {/* 15초 모의 보상형 광고 모달 (중간 닫기 불가) */}
+      {/* 15초 모의 보상형 광고 모달 */}
       {showAdModal && (
         <div className="fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-5">
           <div className="w-full max-w-sm bg-white rounded-2xl overflow-hidden shadow-xl">
