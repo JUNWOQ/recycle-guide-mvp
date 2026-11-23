@@ -1213,7 +1213,7 @@ export default function HomePage() {
               }}
               className="shrink-0 text-xs font-bold bg-white text-emerald-900 px-2.5 py-1.5 rounded-lg"
             >
-              쿠폰
+              보기
             </button>
           </div>
         </footer>
