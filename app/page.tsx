@@ -8,6 +8,7 @@ const DEFAULT_DAILY_LIMIT = 2;
 const NON_RECYCLABLE_COIN = 20;
 const AD_DURATION_SECONDS = 15;
 const STORAGE_KEY = "eco_check_mvp_state_v2";
+const ANON_ID_KEY = "eco_check_anon_user_id_v1";
 
 type PrincipleKey = "empty" | "rinse" | "separate" | "noMix";
 type DisposalCategory = "재활용" | "일반쓰레기" | "음식물쓰레기" | "특수배출" | "인식 불가";
@@ -79,6 +80,23 @@ interface PersistedState {
   logs: TestLogs;
 }
 
+interface ClientLogEvent {
+  event:
+    | "app_open"
+    | "guide_result"
+    | "instant_reward"
+    | "verify_result"
+    | "duplicate_blocked"
+    | "ad_completed"
+    | "coupon_exchanged"
+    | "coupon_used";
+  category?: string;
+  itemName?: string;
+  passedCount?: string;
+  coins?: number;
+  detail?: string;
+}
+
 const COUPON_CATALOG: CouponProduct[] = [
   {
     id: "local-cafe-500",
@@ -113,6 +131,39 @@ const COUPON_CATALOG: CouponProduct[] = [
     tag: "제휴 예정",
   },
 ];
+
+function getAnonymousUserId(): string {
+  if (typeof window === "undefined") return "server";
+  try {
+    const existing = localStorage.getItem(ANON_ID_KEY);
+    if (existing) return existing;
+
+    const randomPart = Math.random().toString(36).slice(2, 8);
+    const timePart = Date.now().toString(36).slice(-4);
+    const newId = `u_${timePart}${randomPart}`;
+    localStorage.setItem(ANON_ID_KEY, newId);
+    return newId;
+  } catch {
+    return "u_temp";
+  }
+}
+
+function sendLog(payload: ClientLogEvent): void {
+  if (typeof window === "undefined") return;
+  const userId = getAnonymousUserId();
+
+  fetch("/api/log", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      userId,
+      ...payload,
+    }),
+    keepalive: true,
+  }).catch(() => {
+    // 로그 전송 실패가 앱 동작에 영향을 주지 않도록 무시
+  });
+}
 
 function getTodayString(): string {
   const now = new Date();
@@ -326,6 +377,17 @@ export default function HomePage() {
     }
   }, []);
 
+  // 세션당 1회 앱 접속 기록 (구글 시트 전송)
+  useEffect(() => {
+    try {
+      if (sessionStorage.getItem("eco_check_session_logged")) return;
+      sessionStorage.setItem("eco_check_session_logged", "1");
+      sendLog({ event: "app_open", detail: "웹앱 접속" });
+    } catch {
+      // 무시
+    }
+  }, []);
+
   // 상태 저장
   useEffect(() => {
     if (!isLoaded) return;
@@ -405,7 +467,7 @@ export default function HomePage() {
     e.target.value = "";
   };
 
-  // 1단계 AI 배출법 분석 (코인 기회가 0이어도 항상 가능!)
+  // 1단계 AI 배출법 분석 (코인 기회가 0이어도 항상 가능)
   const handleAnalyzeGuide = async () => {
     if (!guideBase64 || !guideHash || isAnalyzingGuide) return;
 
@@ -433,6 +495,17 @@ export default function HomePage() {
 
       setGuideResult(data);
 
+      sendLog({
+        event: "guide_result",
+        category: data.disposalCategory,
+        itemName: data.itemName,
+        detail: data.isValidWaste
+          ? "정상 분류"
+          : data.isScreenCapture
+          ? "화면 재촬영"
+          : "인식 불가",
+      });
+
       // 비재활용(일반/음식물/특수배출) & 코인 기회 남음 → 바로 코인 지급 및 기회 차감
       const isNonRecyclable =
         data.isValidWaste && data.disposalCategory !== "재활용";
@@ -441,6 +514,12 @@ export default function HomePage() {
         const isDuplicate = appState.usedHashes.includes(guideHash);
 
         if (isDuplicate) {
+          sendLog({
+            event: "duplicate_blocked",
+            category: data.disposalCategory,
+            itemName: data.itemName,
+            detail: "1단계 동일 사진 차단",
+          });
           setInstantRewardMessage(
             "배출법은 확인했지만, 이미 리워드를 받은 동일한 사진이라 코인은 지급되지 않습니다."
           );
@@ -453,6 +532,13 @@ export default function HomePage() {
             },
           }));
         } else {
+          sendLog({
+            event: "instant_reward",
+            category: data.disposalCategory,
+            itemName: data.itemName,
+            coins: NON_RECYCLABLE_COIN,
+            detail: "비재활용 즉시 리워드",
+          });
           setInstantRewardMessage(
             `${data.disposalCategory} 확인 완료! 분리 전·후 촬영 없이 바로 +${NON_RECYCLABLE_COIN}코인이 지급되었습니다.`
           );
@@ -471,7 +557,6 @@ export default function HomePage() {
           }));
         }
       } else {
-        // 재활용품(2단계 대기) 또는 코인 기회 0회(가이드만 제공) 또는 인식 불가
         setAppState((prev) => ({
           ...prev,
           logs: {
@@ -519,8 +604,12 @@ export default function HomePage() {
       return;
     }
 
-    // 1단계와 완전히 동일한 사진이거나 이미 인증한 사진 차단
     if (verifyHash === guideHash) {
+      sendLog({
+        event: "duplicate_blocked",
+        itemName: guideResult?.itemName || "",
+        detail: "1단계와 동일 사진 차단",
+      });
       setVerifyError(
         "분리수거 전 사진과 똑같은 사진입니다. 안내대로 정리한 뒤 새로 촬영해 주세요."
       );
@@ -535,6 +624,11 @@ export default function HomePage() {
     }
 
     if (appState.usedHashes.includes(verifyHash)) {
+      sendLog({
+        event: "duplicate_blocked",
+        itemName: guideResult?.itemName || "",
+        detail: "기존 인증 사진 재사용 차단",
+      });
       setVerifyError("이미 리워드 인증에 사용된 사진입니다. 새로운 완료 사진을 촬영해 주세요.");
       setAppState((prev) => ({
         ...prev,
@@ -570,6 +664,15 @@ export default function HomePage() {
 
       setVerifyResult(data);
 
+      sendLog({
+        event: "verify_result",
+        category: "재활용",
+        itemName: data.itemName,
+        passedCount: `${data.passedCount}/4`,
+        coins: data.earnedCoins,
+        detail: data.earnedCoins > 0 ? "2단계 인증 통과" : "2단계 인증 반려",
+      });
+
       setAppState((prev) => {
         const isSuccess = data.earnedCoins > 0;
         return {
@@ -602,6 +705,10 @@ export default function HomePage() {
   const handleCompleteAd = () => {
     if (adSecondsLeft > 0) return;
     setShowAdModal(false);
+    sendLog({
+      event: "ad_completed",
+      detail: "15초 모의 광고 시청 완료",
+    });
     setAppState((prev) => ({
       ...prev,
       remainingAttempts: prev.remainingAttempts + 1,
@@ -628,6 +735,12 @@ export default function HomePage() {
       used: false,
     };
 
+    sendLog({
+      event: "coupon_exchanged",
+      itemName: product.title,
+      detail: `${product.cost}코인 사용`,
+    });
+
     setAppState((prev) => ({
       ...prev,
       coins: prev.coins - product.cost,
@@ -644,6 +757,12 @@ export default function HomePage() {
 
   // 쿠폰 사용 완료 처리
   const handleUseCoupon = (couponId: string) => {
+    const targetCoupon = appState.coupons.find((c) => c.id === couponId);
+    sendLog({
+      event: "coupon_used",
+      itemName: targetCoupon?.title || "",
+      detail: "매장 직원 사용 완료",
+    });
     setAppState((prev) => ({
       ...prev,
       coupons: prev.coupons.map((c) => (c.id === couponId ? { ...c, used: true } : c)),
@@ -724,7 +843,7 @@ export default function HomePage() {
             </div>
           </header>
 
-          {/* 상태 요약 바 (배출법 무제한 + 코인 기회만 표시) */}
+          {/* 상태 요약 바 */}
           <section className="px-5 pt-4">
             <div className="bg-emerald-50/80 border border-emerald-100 rounded-2xl p-4 space-y-2.5">
               <div className="flex items-center justify-between">
@@ -762,7 +881,6 @@ export default function HomePage() {
 
           {/* 메인 영역 */}
           <section className="px-5 py-4 space-y-4">
-            {/* 숨겨진 파일 입력 (1단계 가이드용 / 2단계 완료인증용) */}
             <input
               ref={guideCameraRef}
               type="file"
@@ -794,7 +912,7 @@ export default function HomePage() {
               className="hidden"
             />
 
-            {/* 1단계: 쓰레기 사진 촬영 (코인 기회가 0이어도 항상 열려 있음) */}
+            {/* 1단계: 쓰레기 사진 촬영 */}
             {!guidePreviewUrl ? (
               <div className="rounded-2xl border-2 border-dashed border-emerald-200 bg-emerald-50/30 p-6 text-center space-y-4">
                 <div className="w-14 h-14 rounded-2xl bg-emerald-100 text-emerald-700 mx-auto flex items-center justify-center">
@@ -845,7 +963,6 @@ export default function HomePage() {
                 </div>
               </div>
             ) : (
-              /* 1단계 사진 선택 후 미리보기 */
               <div className="space-y-3">
                 <div className="relative rounded-2xl overflow-hidden border border-slate-200 bg-slate-900 aspect-[4/3]">
                   <img src={guidePreviewUrl} alt="쓰레기 사진 미리보기" className="w-full h-full object-contain" />
@@ -888,7 +1005,7 @@ export default function HomePage() {
               </div>
             )}
 
-            {/* 1단계 결과 카드: 품목 및 배출 가이드 */}
+            {/* 1단계 결과 카드 */}
             {guideResult && categoryStyle && (
               <div className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden">
                 <div className={`p-4 border-b ${categoryStyle.box}`}>
@@ -905,7 +1022,6 @@ export default function HomePage() {
                 </div>
 
                 <div className="p-4 space-y-4">
-                  {/* 단계별 배출 방법 */}
                   <div className="space-y-2">
                     <h4 className="text-xs font-extrabold text-slate-900 flex items-center gap-1.5">
                       <span className="w-1.5 h-4 rounded-full bg-emerald-600 inline-block" />
@@ -933,14 +1049,12 @@ export default function HomePage() {
                     </div>
                   )}
 
-                  {/* 분기 A: 일반/음식물/특수배출 즉시 코인 지급 메시지 */}
                   {instantRewardMessage && (
                     <div className="rounded-xl bg-emerald-50 border border-emerald-200 p-3.5 text-xs text-emerald-900 font-semibold">
                       🎉 {instantRewardMessage}
                     </div>
                   )}
 
-                  {/* 분기 B: 인식 불가 / 비재활용 마무리 / 코인 기회 0회 안내 */}
                   {(!guideResult.isValidWaste ||
                     guideResult.disposalCategory !== "재활용" ||
                     (appState.remainingAttempts <= 0 && !verifyResult)) && (
@@ -975,7 +1089,7 @@ export default function HomePage() {
               </div>
             )}
 
-            {/* 2단계(재활용품 + 코인 기회 남음): 분리수거 완료 사진 촬영 및 평가 */}
+            {/* 2단계: 재활용품 분리수거 완료 사진 인증 */}
             {guideResult &&
               guideResult.isValidWaste &&
               guideResult.disposalCategory === "재활용" &&
@@ -1071,7 +1185,6 @@ export default function HomePage() {
                     </div>
                   )}
 
-                  {/* 2단계 완료 평가 결과 카드 */}
                   {verifyResult && (
                     <div
                       className={`rounded-2xl border p-4 space-y-4 ${
@@ -1265,7 +1378,6 @@ export default function HomePage() {
       {showWalletModal && (
         <div className="fixed inset-0 z-40 bg-black/55 flex items-center justify-center p-4">
           <div className="w-full max-w-sm max-h-[85vh] bg-white rounded-2xl flex flex-col overflow-hidden shadow-xl">
-            {/* 모달 헤더 */}
             <div className="px-5 pt-4 pb-3 border-b border-slate-100 flex items-center justify-between">
               <div>
                 <h2 className="text-base font-bold text-slate-900">리워드 교환소 · 쿠폰함</h2>
@@ -1282,7 +1394,6 @@ export default function HomePage() {
               </button>
             </div>
 
-            {/* 탭 선택 */}
             <div className="grid grid-cols-2 p-2 bg-slate-100 mx-5 mt-3 rounded-xl gap-1">
               <button
                 type="button"
@@ -1320,7 +1431,6 @@ export default function HomePage() {
               </div>
             )}
 
-            {/* 탭 내용 */}
             <div className="p-5 overflow-y-auto space-y-2.5 flex-1">
               {walletTab === "exchange" ? (
                 COUPON_CATALOG.map((item) => {
@@ -1403,7 +1513,6 @@ export default function HomePage() {
                       </span>
                     </div>
 
-                    {/* 모의 바코드 영역 */}
                     <div className="rounded-lg bg-slate-50 border border-slate-200 py-2.5 px-3 text-center">
                       <div
                         className="h-8 w-full mx-auto opacity-80"
