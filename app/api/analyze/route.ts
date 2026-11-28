@@ -38,7 +38,10 @@ interface VerifyRawResponse {
 
 const GUIDE_PROMPT = `
 당신은 분리배출에 서툰 대한민국 1인 가구(자취생)를 돕는 친절하고 정확한 AI 분리배출 가이드입니다.
-사용자가 버리기 전 찍은 사진을 보고 ① 이 쓰레기가 무엇인지 ② 어디에 버려야 하는지(재활용/일반쓰레기/음식물쓰레기/특수배출) ③ 어떻게 처리해서 버려야 하는지 단계별로 알려주세요.
+사용자가 버리기 전 찍은 사진을 보고 ① 이 쓰레기가 무엇인지 ② 어디에 버려야 하는지(재활용/일반쓰레기/음식물쓰레기/특수배출) ③ 어떻게 처리해서 버려야 하는지 초보자도 바로 따라 할 수 있게 구체적으로 알려주세요.
+
+[대한민국 환경부 핵심 지침]
+- 투명 페트병: 내용물 비우고 헹군 뒤 라벨을 제거하고, 부피를 줄이기 위해 찌그러뜨린 다음 뚜껑을 닫아 투명 페트병 전용함에 배출합니다. (뚜껑은 재활용 공정에서 비중 분리되므로 닫아서 버려도 됩니다.)
 
 [어뷰징 및 예외 판별]
 1. 컴퓨터 모니터, 노트북, 스마트폰 화면을 다시 촬영한 사진(픽셀 격자, 베젤, 화면 반사광 등)이면 isScreenCapture를 true, disposalCategory를 "인식 불가"로 설정하세요.
@@ -74,7 +77,7 @@ function buildVerifyPrompt(expectedItemName?: string): string {
     : "";
 
   return `
-당신은 대한민국 환경부 분리배출 4대 원칙(비운다, 헹군다, 분리한다, 섞지 않는다)에 따라 사용자가 분리수거를 마친 사진을 엄격하고 공정하게 평가하는 AI 심사관입니다.
+당신은 대한민국 환경부 분리배출 4대 원칙(비운다, 헹군다, 분리한다, 섞지 않는다)에 따라 사용자가 분리수거를 마친 사진을 공정하고 정확하게 평가하는 AI 심사관입니다.
 ${itemHint}
 
 [어뷰징 판별 규칙]
@@ -82,10 +85,12 @@ ${itemHint}
 2. 분리배출 대상 쓰레기가 보이지 않거나 일반 사물/사람/풍경이면 isValidWaste를 false로 설정하세요.
 3. isScreenCapture가 true이거나 isValidWaste가 false이면 4대 원칙 모두 passed를 false로 설정하세요.
 
-[4대 원칙 평가 기준]
+[4대 원칙 평가 기준 및 오판 방지 규칙]
 - empty (비운다): 용기 내부에 음료·음식물·내용물이 완전히 비워졌는지 평가
 - rinse (헹군다): 용기 안팎에 눈에 띄는 이물질이나 오염이 깨끗이 헹궈졌는지 평가 (종이/택배 상자 등 세척 불필요 품목은 오염 없으면 통과)
-- separate (분리한다): 페트병 라벨/뚜껑 제거, 상자 테이프·송장 제거 등 다른 재질이 분리되었는지 평가
+- separate (분리한다): 페트병 라벨 제거, 택배 상자 테이프·송장 제거 등 이물질·부착물이 분리되었는지 평가
+  * [중요 - 페트병 뚜껑 규칙]: 대한민국 환경부 지침상 페트병은 부피를 줄이기 위해 찌그러뜨린 뒤 뚜껑을 닫아서 배출하는 것이 올바른 방법입니다. 페트병에 뚜껑이 닫혀 있거나 목 고리가 남아 있어도 절대 감점(false)하지 말고 통과(true) 처리하세요. 뚜껑을 따로 분리한 경우도 통과(true)입니다.
+  * [중요 - 투명 용기 배경 착시 주의]: 투명 페트병이나 투명 플라스틱 뒤로 비쳐 보이는 책상·장패드·바닥의 글씨나 무늬를 '라벨 미제거'로 착각하지 마세요. 병 둘레를 감싸고 있는 실제 비닐/종이 라벨 띠가 명확하게 보일 때만 라벨 미제거로 감점(false)하세요.
 - noMix (섞지 않는다): 다른 재질의 쓰레기가 섞이지 않고 단독 분류되었는지 평가
 
 반드시 아래 JSON 형식으로만 한국어로 응답하세요.
@@ -197,7 +202,6 @@ async function callGeminiWithFallback(
       } else {
         const errText = await res.text();
         console.warn(`Gemini model ${model} failed (${res.status}):`, errText.slice(0, 200));
-        // 503(서버 혼잡), 429(한도), 404(모델 미지원)일 경우 다음 모델로 즉시 전환
         if (res.status === 503 || res.status === 429 || res.status === 404) {
           await sleep(400);
           continue;
@@ -282,7 +286,6 @@ export async function POST(request: Request) {
 
     const cleaned = cleanJsonText(aiResponse.text);
 
-    // 1단계: 품목 분류 및 배출 방법 가이드 모드
     if (mode === "guide") {
       const parsed = JSON.parse(cleaned) as GuideRawResponse;
       const isScreenCapture = Boolean(parsed.isScreenCapture);
@@ -316,7 +319,6 @@ export async function POST(request: Request) {
       });
     }
 
-    // 2단계: 재활용품 분리수거 완료 상태 평가 모드
     const parsed = JSON.parse(cleaned) as VerifyRawResponse;
     const isScreenCapture = Boolean(parsed.isScreenCapture);
     const isValidWaste = Boolean(parsed.isValidWaste) && !isScreenCapture;
@@ -366,7 +368,7 @@ export async function POST(request: Request) {
           : "실제 분리수거된 쓰레기가 확인되지 않아 인증이 반려되었습니다."),
       actionTip:
         parsed.actionTip ||
-        "라벨 제거와 세척 상태가 잘 보이도록 촬영하면 더 정확하게 평가됩니다.",
+        "라벨 제거와 세척 상태가 잘 보이도록 단색 배경에서 촬영하면 더 정확하게 평가됩니다.",
     });
   } catch (error) {
     console.error("Analyze route error:", error);
